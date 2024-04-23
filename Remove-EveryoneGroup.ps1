@@ -74,8 +74,8 @@ if ($UNCName -match "^\\\\[^\\]+\\c\$\\home$") {
         [int]$inherCount = 0
         [int]$everyCount = 0
         [int]$changeCount = 0
-        Write-Host ("{0,-25} {1,-35}" -f "Directory", $dir.Name) -ForegroundColor Cyan
-        $UNCChildren = Get-ChildItem $dir -Directory | Sort-Object
+        Write-Host ("{0,-25} {1,-35}" -f "Directory:", $dir.FullName) -ForegroundColor Cyan
+        $UNCChildren = Get-ChildItem $dir.FullName -Directory | Sort-Object
         foreach($folder in $UNCChildren){
             # Check access to folder. Add admin if needed.
             try{
