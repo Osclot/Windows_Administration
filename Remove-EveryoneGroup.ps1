@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.1.0
+.VERSION 1.1.1
 
 .GUID a88953e9-bba3-4eed-80a8-5bbd2597c97a
 
@@ -31,6 +31,7 @@
 1.0.8 - Automated and removed the -Full switch.
 1.0.9 - Changed default behavior to hide progress. -ShowProgress will now display progress.
 1.1.0 - Rewrite of entire script to improve performance and manageability. Changes to remove NTFSSecurity pending.
+1.1.1 - Removed commented-out variables. Added logic to determine $UNCPath using regular expressions. 
 #>
 
 #Requires -Module NTFSSecurity
