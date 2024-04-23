@@ -43,7 +43,7 @@
 #> 
 
 Param(
-    # Home directory folder. Example: $UNCName = "\\nawespscfs101v\c$\home\USER01\"
+    # Home directory folder. Example: $UNCName = "\\[ServerName]\[DirectoryPath]$\"
     [Parameter( Mandatory )]
     [String]
     $UNCName
@@ -67,14 +67,14 @@ $UNCName         : Directory to be checked.
 
 if ($UNCName -match "^\\\\[^\\]+\\c\$\\home$") {
     # Get all subfolders under /home
-    $UNCDirectories = Get-ChildItem $UNCName -Directory
+    $UNCDirectories = Get-ChildItem $UNCName -Directory | Sort-Object
     foreach($dir in $UNCDirectories){
         [int]$adminCount = 0
         [int]$inherCount = 0
         [int]$everyCount = 0
         [int]$changeCount = 0
         Write-Host ("{0,-25} {1,-35}" -f "Directory", $dir.Name) -ForegroundColor Cyan
-        $UNCChildren = Get-ChildItem $dir
+        $UNCChildren = Get-ChildItem $dir -Directory | Sort-Object
         foreach($folder in $UNCChildren){
             # Check access to folder. Add admin if needed.
             try{
@@ -134,7 +134,7 @@ if ($UNCName -match "^\\\\[^\\]+\\c\$\\home$") {
     }
 } 
 elseif ($UNCName -match "^\\\\[^\\]+\\c\$\\home\\[^\\]+$" -or $UNCName -match "^\\\\[^\\]+\\[^\\]+\$") {
-    $UNCChildren = Get-ChildItem $UNCName | Sort-Object
+    $UNCChildren = Get-ChildItem $UNCName -Directory | Sort-Object
     [int]$adminCount = 0
     [int]$inherCount = 0
     [int]$everyCount = 0
