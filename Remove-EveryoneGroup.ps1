@@ -48,91 +48,150 @@ Param(
     [String]
     $UNCName
 )
-
 <#
 
-$AdminAccessRule : Access rule for Administrators group.
 $adminCount      : Number of folders missing Administrators group.
 $acl             : ACL Object of the current $folder in the loop. 
 $changeCount     : Number of folders modified
+$dir             : Each item in $UNCDirectories
 $everyCount      : Number of folders with Everyone Group present.
 $everyoneGroup   : Used to check and remove Everyone Group if present. Count = 0 if absent.
 $folder          : Current $UNCChildren item in the loop.
 $folderMod       : True if current folder ACL was changed.
 $inherCount      : Number of folders with inheritance enabled.
 $UNCChildren     : Folders contained within $UNCName.
+$UNCDirectories  : Child items of ..\home\
 $UNCName         : Directory to be checked.
 
 #>
-[int]$adminCount = 0
-[int]$inherCount = 0
-[int]$everyCount = 0
-[int]$changeCount = 0
 
-$UNCName = Get-Item $UNCName
+if ($UNCName -match "^\\\\[^\\]+\\c\$\\home$") {
+    # Get all subfolders under /home
+    $UNCDirectories = Get-ChildItem $UNCName -Directory
+    foreach($dir in $UNCDirectories){
+        [int]$adminCount = 0
+        [int]$inherCount = 0
+        [int]$everyCount = 0
+        [int]$changeCount = 0
+        Write-Host ("{0,-25} {1,-35}" -f "Directory", $dir.Name) -ForegroundColor Cyan
+        $UNCChildren = Get-ChildItem $dir
+        foreach($folder in $UNCChildren){
+            # Check access to folder. Add admin if needed.
+            try{
+                $acl = $folder.GetAccessControl()
+            }
+            catch{
+                Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+                $acl = $folder.GetAccessControl()
+                $adminCount += 1
+                $folderMod = $true
+                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
+            }
+            # Disable inheritance.
+            if($acl.access.IsInherited -eq $true){
+                $acl.SetAccessRuleProtection($true,$true)
+                $folder.SetAccessControl($acl)
+                $inherCount += 1
+                $folderMod = $true
+                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Inheritance Removed") -ForegroundColor Red
+            }
+    
+            # Check if Administrator Group was removed due to inheritance. Add if needed.
+            try{
+                $acl = $folder.GetAccessControl()
+            }
+            catch{
+                Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+                $acl = $folder.GetAccessControl()
+                $adminCount += 1
+                $folderMod = $true
+                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
+            }
+    
+            # Check if Everyone Group exists. Remove if needed.
+            $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
+            if($everyoneGroup.count -ne 0){
+                $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
+                $folder.SetAccessControl($acl)
+                $everyCount += 1
+                $folderMod = $true
+                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Everyone Removed") -ForegroundColor Red
+            }
+    
+            if($folderMod){
+                $changeCount += 1
+                Remove-Variable folderMod
+            }
+            Else{
+                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Good") -ForegroundColor Green
+            }
+        }
+        Write-Host ("{0,-25} {1,-35}" -f "Folders modified:", $changeCount)
+        Write-Host ("{0,-25} {1,-35}" -f "Admin Groups Added:", $adminCount)
+        Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
+        Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
 
-#$AdminAccessRule = New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators','FullControl','ContainerInherit,ObjectInherit','None','Allow')
-$UNCChildren = Get-ChildItem $UNCName | Sort-Object
+    }
+} 
+elseif ($UNCName -match "^\\\\[^\\]+\\c\$\\home\\[^\\]+$" -or $UNCName -match "^\\\\[^\\]+\\[^\\]+\$") {
+    $UNCChildren = Get-ChildItem $UNCName | Sort-Object
+    [int]$adminCount = 0
+    [int]$inherCount = 0
+    [int]$everyCount = 0
+    [int]$changeCount = 0
+    foreach($folder in $UNCChildren){
+        # Check access to folder. Add admin if needed.
+        try{
+            $acl = $folder.GetAccessControl()
+        }
+        catch{
+            Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+            $acl = $folder.GetAccessControl()
+            $adminCount += 1
+            $folderMod = $true
+            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
+        }
+        # Disable inheritance.
+        if($acl.access.IsInherited -eq $true){
+            $acl.SetAccessRuleProtection($true,$true)
+            $folder.SetAccessControl($acl)
+            $inherCount += 1
+            $folderMod = $true
+            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Inheritance Removed") -ForegroundColor Red
+        }
 
-foreach($folder in $UNCChildren){
-    # Check access to folder. Add admin if needed.
-    try{
-        $acl = $folder.GetAccessControl()
-    }
-    catch{
-        Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-        $acl = $folder.GetAccessControl()
-        #$acl.AddAccessRule($AdminAccessRule)
-        #$folder.SetAccessControl($acl)
-        $adminCount += 1
-        $folderMod = $true
-        Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-    }
-    # Disable inheritance.
-    if($acl.access.IsInherited -eq $true){
-        $acl.SetAccessRuleProtection($true,$true)
-        $folder.SetAccessControl($acl)
-        $inherCount += 1
-        $folderMod = $true
-        Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Inheritance Removed") -ForegroundColor Red
-    }
+        # Check if Administrator Group was removed due to inheritance. Add if needed.
+        try{
+            $acl = $folder.GetAccessControl()
+        }
+        catch{
+            Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+            $acl = $folder.GetAccessControl()
+            $adminCount += 1
+            $folderMod = $true
+            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
+        }
 
-    # Check if Administrator Group was removed. Add if needed.
-    try{
-        $acl = $folder.GetAccessControl()
-    }
-    catch{
-        Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-        $acl = $folder.GetAccessControl()
-        #$acl.AddAccessRule($AdminAccessRule)
-        #$folder.SetAccessControl($acl)
-        $adminCount += 1
-        $folderMod = $true
-        Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-    }
+        # Check if Everyone Group exists. Remove if needed.
+        $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
+        if($everyoneGroup.count -ne 0){
+            $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
+            $folder.SetAccessControl($acl)
+            $everyCount += 1
+            $folderMod = $true
+            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Everyone Removed") -ForegroundColor Red
+        }
 
-    # Check if Everyone Group exists. Remove if needed.
-    $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
-    if($everyoneGroup.count -ne 0){
-        $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-        $folder.SetAccessControl($acl)
-        $everyCount += 1
-        $folderMod = $true
-        Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Everyone Removed") -ForegroundColor Red
+        if($folderMod){
+            $changeCount += 1
+            Remove-Variable folderMod
+        }
+        Else{
+            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Good") -ForegroundColor Green
+        }
     }
-
-    if($folderMod){
-        $changeCount += 1
-        #Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "MODIFIED") -ForegroundColor Red
-        Remove-Variable folderMod
-    }
-    Else{
-        Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Good") -ForegroundColor Green
-    }
+    Write-Host ("{0,-25} {1,-35}" -f "Folders modified:", $changeCount)
+    Write-Host ("{0,-25} {1,-35}" -f "Admin Groups Added:", $adminCount)
+    Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
+    Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
 }
-
-
-Write-Host ("{0,-25} {1,-35}" -f "Folders modified:", $changeCount)
-Write-Host ("{0,-25} {1,-35}" -f "Admin Groups Added:", $adminCount)
-Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
-Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
