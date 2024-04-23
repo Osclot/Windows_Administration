@@ -195,3 +195,6 @@ elseif ($UNCName -match "^\\\\[^\\]+\\c\$\\home\\[^\\]+$" -or $UNCName -match "^
     Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
     Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
 }
+else {
+    Write-Host "Could not determine UNCName. Verify path and try again." -ForegroundColor Red
+}
