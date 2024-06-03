@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.1.1
+.VERSION 1.1.7
 
 .GUID a88953e9-bba3-4eed-80a8-5bbd2597c97a
 
@@ -32,6 +32,9 @@
 1.0.9 - Changed default behavior to hide progress. -ShowProgress will now display progress.
 1.1.0 - Rewrite of entire script to improve performance and manageability. Changes to remove NTFSSecurity pending.
 1.1.1 - Removed commented-out variables. Added logic to determine $UNCPath using regular expressions. 
+1.1.3 - Added runspaces to improve performance.
+1.1.5 - Added synchronized hash tables for progress tracking. 
+1.1.6 - Updated max thread limits to vary per machine. 
 #>
 
 #Requires -Module NTFSSecurity
@@ -65,137 +68,100 @@ $UNCDirectories  : Child items of ..\home\
 $UNCName         : Directory to be checked.
 
 #>
+$threadCount = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+$SharedChanges = [HashTable]::Synchronized(@{})
+$SharedChanges.ChangesMade = 0
+$SharedChanges.FoldersComplete = 0
 
+
+$RunspacePool = [runspacefactory]::CreateRunspacePool(1,$threadCount)
+$RunspacePool.ApartmentState = "MTA"
+$RunspacePool.Open()
+[System.Collections.ArrayList]$RunspaceCollection = @()
+$RunspaceBlock = {
+    param($UNCChildren)
+    $t = ($UNCChildren | Measure-Object).Count
+    $i = 0
+    foreach($folder in $UNCChildren){
+        $Instance = [powershell]::Create().AddScript($ScriptBlock).AddArgument($folder).AddArgument($SharedChanges)
+        $Instance.RunspacePool = $RunspacePool
+        $RunspaceCollection.Add([PSCustomObject]@{
+        Results  = $Instance.BeginInvoke()
+        Instance = $Instance
+        }) | Out-Null
+    }
+    do {
+        $i = $SharedChanges.FoldersComplete
+        Write-Progress -Activity "All folders loaded. Checking/Updating." -Status "$i/$t Folders Complete."
+        Start-Sleep -Seconds 1
+    }
+    while ($RunspaceCollection.Results.IsCompleted -contains $false)
+    foreach ($Runspace in $RunspaceCollection){
+        if ($Runspace.Results.IsCompleted){
+            $Runspace.Instance.EndInvoke($Runspace.Results)
+            $Runspace.Instance.Dispose()
+        }
+    }
+}
+$ScriptBlock = {
+    param($folder,$SharedChanges)
+    Import-Module NTFSSecurity
+    # Check access to folder. Add admin if needed.
+    try{
+        $acl = $folder.GetAccessControl()
+    }
+    catch{
+        Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+        $acl = $folder.GetAccessControl()                
+    }
+    # Disable inheritance.
+    if($acl.access.IsInherited -eq $true){
+        $acl.SetAccessRuleProtection($true,$true)
+        $folder.SetAccessControl($acl)
+    }
+    # Check if Administrator Group was removed due to inheritance. Add if needed.
+    try{
+        $acl = $folder.GetAccessControl()
+    }
+    catch{
+        Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
+        $acl = $folder.GetAccessControl()
+    }
+    # Check if Everyone Group exists. Remove if needed.
+    $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
+    if($everyoneGroup.count -ne 0){
+        $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
+        $folder.SetAccessControl($acl)
+        $folderMod = $true
+    }
+    if($folderMod){
+        $SharedChanges.ChangesMade++
+        $SharedChanges.FolderNames += $folder.Name + "`n"
+    }
+    $SharedChanges.FoldersComplete++
+}
 if ($UNCName -match "^\\\\[^\\]+\\c\$\\home$") {
     # Get all subfolders under /home
     $UNCDirectories = Get-ChildItem $UNCName -Directory | Sort-Object
     foreach($dir in $UNCDirectories){
-        [int]$adminCount = 0
-        [int]$inherCount = 0
-        [int]$everyCount = 0
-        [int]$changeCount = 0
-        Write-Host ("{0,-25} {1,-35}" -f "Directory:", $dir.FullName) -ForegroundColor Cyan
+        Write-Host "Retrieving child folders of $dir."
         $UNCChildren = Get-ChildItem $dir.FullName -Directory | Sort-Object
-        foreach($folder in $UNCChildren){
-            # Check access to folder. Add admin if needed.
-            try{
-                $acl = $folder.GetAccessControl()
-            }
-            catch{
-                Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-                $acl = $folder.GetAccessControl()
-                $adminCount += 1
-                $folderMod = $true
-                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-            }
-            # Disable inheritance.
-            if($acl.access.IsInherited -eq $true){
-                $acl.SetAccessRuleProtection($true,$true)
-                $folder.SetAccessControl($acl)
-                $inherCount += 1
-                $folderMod = $true
-                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Inheritance Removed") -ForegroundColor Red
-            }
-    
-            # Check if Administrator Group was removed due to inheritance. Add if needed.
-            try{
-                $acl = $folder.GetAccessControl()
-            }
-            catch{
-                Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-                $acl = $folder.GetAccessControl()
-                $adminCount += 1
-                $folderMod = $true
-                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-            }
-    
-            # Check if Everyone Group exists. Remove if needed.
-            $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
-            if($everyoneGroup.count -ne 0){
-                $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-                $folder.SetAccessControl($acl)
-                $everyCount += 1
-                $folderMod = $true
-                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Everyone Removed") -ForegroundColor Red
-            }
-    
-            if($folderMod){
-                $changeCount += 1
-                Remove-Variable folderMod
-            }
-            Else{
-                Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Good") -ForegroundColor Green
-            }
-        }
-        Write-Host ("{0,-25} {1,-35}" -f "Folders modified:", $changeCount)
-        Write-Host ("{0,-25} {1,-35}" -f "Admin Groups Added:", $adminCount)
-        Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
-        Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
-
+        &$RunspaceBlock -UNCChildren $UNCChildren | Out-Null
+        $SharedChanges.FolderNames
+        Write-Host "Folders Requiring Everyone Group Removal in $dir : ",$SharedChanges.ChangesMade
+        $SharedChanges.ChangesMade = 0
+        $SharedChanges.FoldersComplete = 0
+        $SharedChanges.Remove('FolderNames')
     }
 } 
-elseif ($UNCName -match "^\\\\[^\\]+\\c\$\\home\\[^\\]+$" -or $UNCName -match "^\\\\[^\\]+\\[^\\]+\$") {
+else{
+    Write-Host "Retrieving child folders of $UNCName."
     $UNCChildren = Get-ChildItem $UNCName -Directory | Sort-Object
-    [int]$adminCount = 0
-    [int]$inherCount = 0
-    [int]$everyCount = 0
-    [int]$changeCount = 0
-    foreach($folder in $UNCChildren){
-        # Check access to folder. Add admin if needed.
-        try{
-            $acl = $folder.GetAccessControl()
-        }
-        catch{
-            Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-            $acl = $folder.GetAccessControl()
-            $adminCount += 1
-            $folderMod = $true
-            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-        }
-        # Disable inheritance.
-        if($acl.access.IsInherited -eq $true){
-            $acl.SetAccessRuleProtection($true,$true)
-            $folder.SetAccessControl($acl)
-            $inherCount += 1
-            $folderMod = $true
-            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Inheritance Removed") -ForegroundColor Red
-        }
-
-        # Check if Administrator Group was removed due to inheritance. Add if needed.
-        try{
-            $acl = $folder.GetAccessControl()
-        }
-        catch{
-            Add-NTFSAccess $folder -Account BUILTIN\Administrators -AccessRights FullControl -AccessType Allow -InheritanceFlags ContainerInherit,ObjectInherit -PropagationFlags None
-            $acl = $folder.GetAccessControl()
-            $adminCount += 1
-            $folderMod = $true
-            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Admin Added") -ForegroundColor Red
-        }
-
-        # Check if Everyone Group exists. Remove if needed.
-        $everyoneGroup = $acl.Access.Where({ $_.IdentityReference -match 'Everyone' })
-        if($everyoneGroup.count -ne 0){
-            $everyoneGroup | ForEach-Object { $acl.RemoveAccessRule($_) } | Out-Null
-            $folder.SetAccessControl($acl)
-            $everyCount += 1
-            $folderMod = $true
-            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Everyone Removed") -ForegroundColor Red
-        }
-
-        if($folderMod){
-            $changeCount += 1
-            Remove-Variable folderMod
-        }
-        Else{
-            Write-Host ("{0,-25} {1,-35}" -f $folder.Name, "Good") -ForegroundColor Green
-        }
-    }
-    Write-Host ("{0,-25} {1,-35}" -f "Folders modified:", $changeCount)
-    Write-Host ("{0,-25} {1,-35}" -f "Admin Groups Added:", $adminCount)
-    Write-Host ("{0,-25} {1,-35}" -f "Inheritance Removed:", $inherCount)
-    Write-Host ("{0,-25} {1,-35}" -f "Everyone Removed:", $everyCount)
+    &$RunspaceBlock -UNCChildren $UNCChildren | Out-Null
+    $SharedChanges.FolderNames
+    Write-Host "Folders Requiring Everyone Group Removal: ",$SharedChanges.ChangesMade
 }
-else {
-    Write-Host "Could not determine UNCName. Verify path and try again." -ForegroundColor Red
-}
+
+
+$RunspacePool.Close()
+$RunspacePool.Dispose()
